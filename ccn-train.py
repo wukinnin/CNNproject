@@ -1,4 +1,3 @@
-## Imports
 import os
 import numpy as np
 import cv2
@@ -6,62 +5,76 @@ from random import shuffle
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dense, Dropout, Flatten
-from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler
+from tensorflow.data import Dataset
 
-## Directories and hyperparameters
+# Check for GPU
+if tf.config.list_physical_devices('GPU'):
+    print("GPU is available and will be used for training.")
+else:
+    print("No GPU detected. Training will use the CPU.")
+
+# Constants
 TRAIN_DIR = 'train'
 IMG_SIZE = 128
 IMAGE_CHANNELS = 3
 FIRST_NUM_CHANNEL = 32
 FILTER_SIZE = 3
 LR = 0.0001
-PERCENT_TRAINING_DATA = 80
-NUM_EPOCHS = 50
+EPOCHS = 50
+BATCH_SIZE = 32
 MODEL_NAME = 'animals_cnn'
+TRAIN_SPLIT_RATIO = 0.8
 
-# Function to read all classes in the train folder
+# Define classes and labels dynamically
 def define_classes():
-    all_classes = []
-    for folder in os.listdir(TRAIN_DIR):
-        all_classes.append(folder)
+    all_classes = sorted(os.listdir(TRAIN_DIR))
     return all_classes, len(all_classes)
 
-# Function to define labels as one-hot encoded arrays
 def define_labels(all_classes):
-    all_labels = []
-    for x in range(len(all_classes)):
-        label = np.zeros(len(all_classes))
-        label[x] = 1
-        all_labels.append(label)
-    return all_labels
+    return np.eye(len(all_classes))
 
-# Function to load and preprocess images
-def create_train_data(all_classes, all_labels):
-    training_data = []
-    for label_index, specific_class in enumerate(all_classes):
-        current_dir = os.path.join(TRAIN_DIR, specific_class)
-        print(f'Reading directory of {current_dir}')
-        for img_filename in os.listdir(current_dir):
-            path = os.path.join(current_dir, img_filename)
-            img = cv2.imread(path)
-            img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-            training_data.append([img, all_labels[label_index]])
-    shuffle(training_data)
-    return training_data
+# Load and preprocess images with normalization
+def preprocess_image(filepath, img_size):
+    img = cv2.imread(filepath)
+    img = cv2.resize(img, (img_size, img_size))
+    img = img / 255.0  # Normalize pixel values
+    return img
 
-# Prepare data
-all_classes, NUM_OUTPUT = define_classes()
+def create_data(all_classes, all_labels):
+    data = []
+    for label_index, class_name in enumerate(all_classes):
+        folder_path = os.path.join(TRAIN_DIR, class_name)
+        for img_file in os.listdir(folder_path):
+            img_path = os.path.join(folder_path, img_file)
+            img = preprocess_image(img_path, IMG_SIZE)
+            data.append([img, all_labels[label_index]])
+    shuffle(data)
+    return data
+
+# Define classes and labels
+all_classes, NUM_CLASSES = define_classes()
 all_labels = define_labels(all_classes)
-training_data = create_train_data(all_classes, all_labels)
 
-# Split into training and test sets
-train = training_data[:int(len(training_data) * (PERCENT_TRAINING_DATA / 100))]
-test = training_data[-int(len(training_data) * (PERCENT_TRAINING_DATA / 100)):]
-X_train = np.array([i[0] for i in train]).reshape(-1, IMG_SIZE, IMG_SIZE, IMAGE_CHANNELS) / 255.0
-Y_train = np.array([i[1] for i in train])
-X_test = np.array([i[0] for i in test]).reshape(-1, IMG_SIZE, IMG_SIZE, IMAGE_CHANNELS) / 255.0
-Y_test = np.array([i[1] for i in test])
+# Load dataset
+data = create_data(all_classes, all_labels)
+
+# Split into training and validation sets
+split_idx = int(len(data) * TRAIN_SPLIT_RATIO)
+train_data, val_data = data[:split_idx], data[split_idx:]
+
+# Prepare input and labels
+X_train = np.array([item[0] for item in train_data])
+Y_train = np.array([item[1] for item in train_data])
+X_val = np.array([item[0] for item in val_data])
+Y_val = np.array([item[1] for item in val_data])
+
+# Learning rate scheduler
+def lr_schedule(epoch, lr):
+    if epoch > 30:
+        return lr * 0.1
+    return lr
 
 # Build the model
 model = Sequential([
@@ -75,15 +88,29 @@ model = Sequential([
     MaxPooling2D(pool_size=(2, 2)),
     Flatten(),
     Dense(FIRST_NUM_CHANNEL * 16, activation='relu'),
-    Dropout(0.8),
-    Dense(NUM_OUTPUT, activation='softmax')
+    Dropout(0.5),  # Reduced dropout for better retention
+    Dense(NUM_CLASSES, activation='softmax')
 ])
 
 # Compile the model
 model.compile(optimizer=Adam(learning_rate=LR), loss='categorical_crossentropy', metrics=['accuracy'])
 
-# Train the model
-model.fit(X_train, Y_train, epochs=NUM_EPOCHS, batch_size=32, validation_data=(X_test, Y_test), verbose=1)
+# Callbacks for training
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
+    LearningRateScheduler(lr_schedule)
+]
 
-# Save the model
-model.save(f"{MODEL_NAME}.h5")
+# Train the model
+history = model.fit(
+    X_train, Y_train,
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    validation_data=(X_val, Y_val),
+    callbacks=callbacks,
+    verbose=1
+)
+
+# Save the model in TensorFlow's SavedModel format
+model.save(MODEL_NAME)
+print(f"Model saved to {MODEL_NAME}")
