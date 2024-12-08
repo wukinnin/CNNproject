@@ -4,7 +4,7 @@
 
 - Python 3
 - `pip install numpy opencv-python tensorflow tflearn tensorflow-gpu`
-
+- Image database provided by Kaggle via Microsoft: https://www.microsoft.com/en-us/download/details.aspx?id=54765
 ---
 
 Expected file format:
